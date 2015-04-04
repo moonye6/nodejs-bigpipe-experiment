@@ -1,72 +1,75 @@
-var http = require('http')
+var express = require('express')
   , path = require('path')
-  , url = require('url')
   , fs = require('fs')
 
-var express = require('express')
-  , resProto = require('express/lib/response')
-  , cons = require('consolidate')
-  , jade = require('jade')
+var app = express()
 
-function jadeCompile(content) {
-  return jade.compile(content, { client: true, compileDebug: false })
-    .toString()
-    .replace(/<\/script/gi, '<\\/script')
-}
-function jadePath(pathname) {
-  pathname = pathname.replace(/(\.jade)?\.js$/i, '') + '.jade'
-  return path.join(__dirname, 'views', pathname)
-}
-function seajsJade(content) {
-  return 'define(function(require, exports, module) {\n' +
-    jadeCompile(content) +
-    '\nmodule.exports = anonymous\n})'
-}
-
-resProto.writeView = function (view, options) {
-  options = options || {}
-  var self = this
-  this.render(view, options, function (err, str) {
-    if (err) return this.req.next(err)
-    self.write(str)
-  })
-}
-resProto.pipeView = function (selector, view, options) {
-  options = options || {}
-  var self = this
-  fs.readFile(jadePath(view), 'utf8', function (err, content) {
-    if (err) return self.req.next(err)
-    self.write('<script>\nseajs.use("base", function (base) {\n')
-    self.write('base.pipetemp("' + selector + '", (' + jadeCompile(content))
-    self.write('(' + JSON.stringify(options, null, '  ') + ')))\n')
-    self.write('});</script>')
-  })
-}
-
-
-app = express()
-
-app.engine('jade', cons.jade)
 app.set('views', path.join(__dirname, 'views'))
-app.set('view engine', 'jade')
+app.set('view engine', 'ejs')
 
-app.use(express.static(path.join(__dirname, 'static')))
+var getData = {
+    d1: function (fn) {
+        setTimeout(fn, 8000, null, { content: "Hello, I'm the first section." })
+    }
+  , d2: function (fn) {
+        setTimeout(fn, 5000, null, { content: "Hello, I'm the second section." })
+    }
+}
 
-app.get('/js/jade/*', function (req, res, next) {
-  fs.readFile(jadePath(req.params[0]), 'utf8', function (err, content) {
-    if (err) return res.end('function () {};')
-    res.setHeader('content-type', 'text/javascript; charset=utf-8')
-    res.end(seajsJade(content))
+var static = express.static(path.join(__dirname, 'static'))
+app.use('/static', function (req, res, next) {
+  setTimeout(static, 2000, req, res, next)
+})
+var resProto = require('express/lib/response')
+resProto.pipe = function (selector, html, replace) {
+  this.write('<script>' + '$("' + selector + '").' +
+    (replace === true ? 'replaceWith' : 'html') +
+    '("' + html.replace(/"/g, '\\"').replace(/<\/script>/g, '<\\/script>').replace(/\n/g,'') +
+    '")</script>')
+}
+function PipeName (res, name) {
+  res.pipeCount = res.pipeCount || 0
+  res.pipeMap = res.pipeMap || {}
+  if (res.pipeMap[name]) return
+  res.pipeCount++
+  res.pipeMap[name] = this.id = ['pipe', Math.random().toString().substring(2), (new Date()).valueOf()].join('_')
+  this.res = res
+  this.name = name
+}
+resProto.pipeName = function (name) {
+  return new PipeName(this, name)
+}
+resProto.pipeLayout = function (view, options) {
+  var res = this
+  Object.keys(options).forEach(function (key) {
+    if (options[key] instanceof PipeName) options[key] = '<span id="' + options[key].id + '"></span>'
+  })
+  res.render(view, options, function (err, str) {
+    if (err) return res.req.next(err)
+    res.setHeader('content-type', 'text/html; charset=utf-8')
+    res.write(str)
+    if (!res.pipeCount) res.end()
+  })
+}
+resProto.pipePartial = function (name, view, options) {
+  var res = this
+  res.render(view, options, function (err, str) {
+    if (err) return res.req.next(err)
+    res.pipe('#'+res.pipeMap[name], str, true)
+    --res.pipeCount || res.end()
+  })
+}
+app.use(function (req, res) {
+  res.pipeLayout('layout', {
+      s1: res.pipeName('s1name')
+    , s2: res.pipeName('s2name')
+  })
+  getData.d1(function (err, s1data) {
+    res.pipePartial('s1name', 's1', s1data)
+  })
+  getData.d2(function (err, s2data) {
+    res.pipePartial('s2name', 's2', s2data)
   })
 })
 
-app.use(function (req, res, next) {
-  res.writeView('layout')
-  setTimeout(res.write.bind(res, '<div id="content"></div>'), 500)
-  setTimeout(res.write.bind(res, '<p>See ya!</p>'), 1000)
-  setTimeout(res.pipeView.bind(res, '#content', 'login'), 2000)
-  setTimeout(res.write.bind(res, '</section></div></body>'), 3000)
-  setTimeout(res.end.bind(res), 4000)
-})
-
-http.createServer(app).listen(3000)
+app.listen(3000)
